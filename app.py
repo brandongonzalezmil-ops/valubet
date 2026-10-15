@@ -7,7 +7,12 @@ import streamlit as st
 from scipy.stats import nbinom, poisson
 
 from api_client import obtener_equipos_liga, obtener_partidos_competencia, obtener_promedios_api
-from database import init_db, insertar_partido, obtener_promedios_equipo
+from database import (
+    init_db,
+    insertar_partido,
+    obtener_equipos_registrados,
+    obtener_promedios_equipo,
+)
 
 init_db()
 
@@ -177,19 +182,27 @@ if menu == "Analizar Partido":
         liga_nombre = st.selectbox("Selecciona la Liga", LISTA_LIGAS_MANUAL)
         codigo_liga = None
 
+    equipos_bd = [] if modo_api else obtener_equipos_registrados()
+
     col_a, col_b = st.columns(2)
     with col_a:
         if modo_api:
             local = st.selectbox("Equipo Local", lista_equipos, index=0)
+        elif equipos_bd:
+            local = st.selectbox("Equipo Local", equipos_bd, index=0)
         else:
-            local = st.text_input("Equipo Local", "Millonarios")
+            local = st.text_input("Equipo Local")
     with col_b:
         if modo_api:
             visitante = st.selectbox(
                 "Equipo Visitante", lista_equipos, index=1 if len(lista_equipos) > 1 else 0
             )
+        elif equipos_bd:
+            visitante = st.selectbox(
+                "Equipo Visitante", equipos_bd, index=1 if len(equipos_bd) > 1 else 0
+            )
         else:
-            visitante = st.text_input("Equipo Visitante", "Santa Fe")
+            visitante = st.text_input("Equipo Visitante")
 
     st.subheader("💰 Cuotas de la Casa de Apuestas")
     c1, c2, c3 = st.columns(3)
@@ -236,6 +249,13 @@ if menu == "Analizar Partido":
             lam_corn_loc = sl["corners_favor_local"]
             lam_corn_vis = sv["corners_favor_visitante"]  # corregido: antes usaba stats_local
             st.info("📂 Datos cargados desde tu Base de Datos local.")
+            n_loc = sl.get("partidos_local", 0)
+            n_vis = sv.get("partidos_visitante", 0)
+            if n_loc < 5 or n_vis < 5:
+                st.warning(
+                    f"⚠️ Pocos datos: {local} tiene {n_loc} partidos de local y {visitante} "
+                    f"tiene {n_vis} de visitante. Con menos de 5 los promedios no son confiables."
+                )
 
         if gc_l is None or gc_v is None:
             st.caption(
