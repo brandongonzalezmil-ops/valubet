@@ -104,7 +104,7 @@ elif menu == "Ver Partidos de la API":
     partidos = obtener_partidos_competencia(codigo_competencia)
     if partidos:
       st.success(f"Se encontraron {len(partidos)} partidos para {liga_api_elegida}.")
-      for p in partidos[:10]: # Mostramos los primeros 10
+      for p in partidos[:10]:
         home = p['homeTeam']['name']
         away = p['awayTeam']['name']
         utc_date = p['utcDate'].replace("T", " ")[:16]
@@ -259,10 +259,38 @@ elif menu == "Analizar Partido":
 
       if prob_ambos_marcan_si > 52:
         st.success(
-            f"✅ **Ambos Marcan:** **SÍ** (Probabilidad:"
-            f" **{prob_ambos_marcan_si:.1f}%**)"
+            f"✅ **Ambos Marcan:** **SÍ** (Probabilidad: **{prob_ambos_marcan_si:.1f}%**)"
         )
       else:
         st.warning(
-            f"❌ **Ambos Marcan:** **NO** (Probabilidad:"
-            f" **{prob_ambos_marcan_
+            f"❌ **Ambos Marcan:** **NO** (Probabilidad: **{prob_ambos_marcan_no:.1f}%**)"
+        )
+
+    with col_rec2:
+      st.markdown("#### 🚩 Mercado de Córneres")
+      prob_over_corn = res_corners["prob_over"]
+      prob_under_corn = res_corners["prob_under"]
+
+      if prob_over_corn >= prob_under_corn:
+        st.success(
+            f"🔥 **Apuesta recomendada: Over {linea_c} Córneres**\n-"
+            f" Probabilidad: **{prob_over_corn}%**"
+        )
+      else:
+        st.info(
+            f"🛡️ **Apuesta recomendada: Under {linea_c} Córneres**\n-"
+            f" Probabilidad: **{prob_under_corn}%**"
+        )
+
+      ganador_probable = (
+          f"Gana {local}"
+          if res_goles["prob_local_win"] > res_goles["prob_visitante_win"]
+          else f"Gana {visitante}"
+      )
+      max_prob_ganador = max(
+          res_goles["prob_local_win"], res_goles["prob_visitante_win"]
+      )
+      st.markdown(
+          f"🏆 **Ganador más viable:** **{ganador_probable}**"
+          f" ({max_prob_ganador}%)"
+      )
