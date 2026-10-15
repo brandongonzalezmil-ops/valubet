@@ -1,11 +1,12 @@
 from corners_model import calcular_corners_partido
 from database import init_db, insertar_partido, obtener_promedios_equipo
 from poisson_model import calcular_probabilidades_poisson
+from api_client import obtener_partidos_competencia
 import streamlit as st
 import numpy as np
 from scipy.stats import poisson
 
-# Inicializar base de datos
+# Inicializar base de datos local
 init_db()
 
 st.set_page_config(
@@ -15,16 +16,25 @@ st.set_page_config(
 st.title("⚽ ValuBet - Analizador de Apuestas")
 st.write(
     "Herramienta cuantitativa para detectar *Value Bets* en Goles (1X2) y"
-    " Córneres."
+    " Córneres (con soporte de API y Base de Datos)."
 )
 
 # Menú lateral para navegar
 menu = st.sidebar.selectbox(
-    "Menú de Navegación", ["Analizar Partido", "Registrar Partido"]
+    "Menú de Navegación", ["Analizar Partido", "Registrar Partido Manual", "Ver Partidos de la API"]
 )
 
-# Ligas principales preconfiguradas
-LISTA_LIGAS = [
+# Ligas principales de la API gratuita (con sus códigos oficiales)
+LIGAS_API = {
+    "Premier League (Inglaterra)": "PL",
+    "La Liga (España)": "PD",
+    "Serie A (Italia)": "SA",
+    "Bundesliga (Alemania)": "BL1",
+    "Ligue 1 (Francia)": "FL1",
+    "Champions League": "CL"
+}
+
+LISTA_LIGAS_MANUAL = [
     "Liga BetPlay (Colombia)",
     "Premier League (Inglaterra)",
     "La Liga (España)",
@@ -47,13 +57,13 @@ def evaluar_apuesta_valor(prob_modelo_porcentaje, cuota_casa):
   }
 
 
-if menu == "Registrar Partido":
+# --- OPCIÓN 1: REGISTRAR PARTIDO MANUALMENTE ---
+if menu == "Registrar Partido Manual":
   st.header("📝 Registrar Nuevo Partido en la BD")
 
   with st.form("form_registro"):
-    liga_seleccionada = st.selectbox("Selecciona la Liga", LISTA_LIGAS)
+    liga_seleccionada = st.selectbox("Selecciona la Liga", LISTA_LIGAS_MANUAL)
 
-    # Si selecciona otra, habilitar input de texto libre
     if liga_seleccionada == "Otra / Personalizada":
       liga = st.text_input("Escribe el nombre de la Liga")
     else:
@@ -81,11 +91,35 @@ if menu == "Registrar Partido":
       else:
         st.error("Por favor completa los nombres de los equipos.")
 
+
+# --- OPCIÓN 2: VER PARTIDOS DESDE LA API ---
+elif menu == "Ver Partidos de la API":
+  st.header("🌐 Partidos en la API (Ligas Europeas)")
+  st.write("Consulta los próximos encuentros o partidos de la jornada directamente desde la API.")
+
+  liga_api_elegida = st.selectbox("Selecciona la Competición", list(LIGAS_API.keys()))
+  codigo_competencia = LIGAS_API[liga_api_elegida]
+
+  if st.button("Cargar Partidos de la API"):
+    partidos = obtener_partidos_competencia(codigo_competencia)
+    if partidos:
+      st.success(f"Se encontraron {len(partidos)} partidos para {liga_api_elegida}.")
+      for p in partidos[:10]: # Mostramos los primeros 10
+        home = p['homeTeam']['name']
+        away = p['awayTeam']['name']
+        utc_date = p['utcDate'].replace("T", " ")[:16]
+        status = p['status']
+        st.text(f"📅 {utc_date} | ⚽ {home} vs {away} [{status}]")
+    else:
+      st.warning("No se pudieron cargar partidos o la API no arrojó resultados en este momento.")
+
+
+# --- OPCIÓN 3: ANALIZAR PARTIDO Y RECOMENDACIONES ---
 elif menu == "Analizar Partido":
   st.header("🔍 Análisis y Value Betting")
 
   liga_seleccionada = st.selectbox(
-      "Filtrar / Indicar Liga para el Análisis", LISTA_LIGAS
+      "Filtrar / Indicar Liga para el Análisis", LISTA_LIGAS_MANUAL
   )
   if liga_seleccionada == "Otra / Personalizada":
     liga = st.text_input("Escribe el nombre de la Liga", "Internacional")
@@ -231,34 +265,4 @@ elif menu == "Analizar Partido":
       else:
         st.warning(
             f"❌ **Ambos Marcan:** **NO** (Probabilidad:"
-            f" **{prob_ambos_marcan_no:.1f}%**)"
-        )
-
-    with col_rec2:
-      st.markdown("#### 🚩 Mercado de Córneres")
-      prob_over_corn = res_corners["prob_over"]
-      prob_under_corn = res_corners["prob_under"]
-
-      if prob_over_corn >= prob_under_corn:
-        st.success(
-            f"🔥 **Apuesta recomendada: Over {linea_c} Córneres**\n-"
-            f" Probabilidad: **{prob_over_corn}%**"
-        )
-      else:
-        st.info(
-            f"🛡️ **Apuesta recomendada: Under {linea_c} Córneres**\n-"
-            f" Probabilidad: **{prob_under_corn}%**"
-        )
-
-      ganador_probable = (
-          f"Gana {local}"
-          if res_goles["prob_local_win"] > res_goles["prob_visitante_win"]
-          else f"Gana {visitante}"
-      )
-      max_prob_ganador = max(
-          res_goles["prob_local_win"], res_goles["prob_visitante_win"]
-      )
-      st.markdown(
-          f"🏆 **Ganador más viable:** **{ganador_probable}**"
-          f" ({max_prob_ganador}%)"
-      )
+            f" **{prob_ambos_marcan_
