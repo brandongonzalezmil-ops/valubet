@@ -149,18 +149,18 @@ def combinar(goles_favor, goles_contra_rival):
     return (goles_favor + goles_contra_rival) / 2
 
 
-def estimar_corners_sin_datos(goles_favor, base=5.4):
+def estimar_corners_sin_datos(goles_favor, base=4.7):
     
     try:
         ataque = float(goles_favor)
     except (TypeError, ValueError):
-        ataque = 1.4
+        ataque = 1.3
 
     if not np.isfinite(ataque) or ataque <= 0:
-        ataque = 1.4
+        ataque = 1.3
 
     # 1.4 goles por partido es una referencia inicial ajustable.
-    factor_ataque = ataque / 1.4
+    factor_ataque = ataque / 1.3
 
     # Limita el efecto del ataque para no inflar demasiado el resultado.
     factor_ataque = min(1.10, max(0.85, factor_ataque))
