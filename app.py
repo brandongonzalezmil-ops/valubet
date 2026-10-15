@@ -49,17 +49,16 @@ LISTA_LIGAS_MANUAL = ["Liga BetPlay (Colombia)", "Otra / Personalizada"]
 # ---------------------------------------------------------------------------
 # Caché de llamadas a la API (evita gastar el límite de peticiones)
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
+# api_client.py ya guarda en caché las respuestas exitosas (10 min).
+# No usamos st.cache_data aquí porque guardaría también los fallos (listas vacías).
 def equipos_liga(codigo):
     return obtener_equipos_liga(codigo)
 
 
-@st.cache_data(ttl=3600)
 def promedios_api(equipo, codigo):
     return obtener_promedios_api(equipo, codigo)
 
 
-@st.cache_data(ttl=600)
 def partidos_liga(codigo):
     return obtener_partidos_competencia(codigo)
 
