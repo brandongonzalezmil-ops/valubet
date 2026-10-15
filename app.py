@@ -1,174 +1,225 @@
-from datetime import datetime
-import sqlite3
-import numpy as np
-from scipy.stats import poisson
+from corners_model import calcular_corners_partido
+from database import init_db, insertar_partido, obtener_promedios_equipo
+from poisson_model import calcular_probabilidades_poisson
 import streamlit as st
 
-# --- CONFIGURACIÓN DE LA BASE DE DATOS SQLITE ---
-def init_db():
-    conn = sqlite3.connect('apuestas.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS historial_apuestas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha TEXT,
-            partido TEXT,
-            seleccion TEXT,
-            cuota REAL,
-            monto REAL,
-            estado TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
+# Inicializar base de datos
 init_db()
 
-# Configuración de la página
-st.set_page_config(page_title="Analizador y Registro de Apuestas", page_icon="⚽", layout="centered")
+st.set_page_config(
+    page_title="ValuBet - Analizador de Apuestas", page_icon="⚽", layout="centered"
+)
 
-st.title("⚽ Analizador de Fútbol + Base de Datos")
-st.write(f"¡Hola, Brandon! Aquí tienes tu herramienta completa de análisis y registro manual.")
+st.title("⚽ ValuBet - Analizador de Apuestas")
+st.write(
+    "Herramienta cuantitativa para detectar *Value Bets* en Goles (1X2) y"
+    " Córneres."
+)
 
-# --- SECCIÓN 1: PARÁMETROS DEL PARTIDO ---
-st.sidebar.header("1. Estadísticas del Partido")
-equipo_local = st.sidebar.text_input("Equipo Local", "Local")
-equipo_visitante = st.sidebar.text_input("Equipo Visitante", "Visitante")
+# Menú lateral para navegar
+menu = st.sidebar.selectbox(
+    "Menú de Navegación", ["Analizar Partido", "Registrar Partido"]
+)
 
-# Promedios esperados (Goles)
-st.sidebar.subheader("Goles esperados (Media)")
-lambda_goles_local = st.sidebar.number_input(f"Goles esperados - {equipo_local}", min_value=0.1, value=1.5, step=0.1)
-lambda_goles_visit = st.sidebar.number_input(f"Goles esperados - {equipo_visitante}", min_value=0.1, value=1.1, step=0.1)
-
-# Promedios esperados (Córners)
-st.sidebar.subheader("Córners esperados (Media)")
-lambda_corners_local = st.sidebar.number_input(f"Córners esperados - {equipo_local}", min_value=0.1, value=5.5, step=0.5)
-lambda_corners_visit = st.sidebar.number_input(f"Córners esperados - {equipo_visitante}", min_value=0.1, value=4.5, step=0.5)
-
-# --- CÁLCULOS CON POISSON ---
-def calcular_probabilidades_goles(l_local, l_visit, max_goles=5):
-    matriz = np.outer(poisson.pmf(np.arange(max_goles+1), l_local), poisson.pmf(np.arange(max_goles+1), l_visit))
-    prob_local = np.sum(np.tril(matriz, -1))
-    prob_empate = np.sum(np.diag(matriz))
-    prob_visit = np.sum(np.triu(matriz, 1))
-    
-    # Over / Under 2.5 Goles
-    prob_over_25 = 0
-    prob_under_25 = 0
-    for i in range(max_goles+1):
-        for j in range(max_goles+1):
-            if (i + j) > 2.5:
-                prob_over_25 += matriz[i, j]
-            else:
-                prob_under_25 += matriz[i, j]
-                
-    return prob_local, prob_empate, prob_visit, prob_over_25, prob_under_25
-
-p_local, p_empate, p_visit, p_over, p_under = calcular_probabilidades_goles(lambda_goles_local, lambda_goles_visit)
-total_corners_esperados = lambda_corners_local + lambda_corners_visit
-
-# --- MOSTRAR RESULTADOS DEL MODELO ---
-st.markdown("---")
-st.subheader("📊 Análisis y Viabilidad del Modelo (Poisson)")
-
-col1, col2, col3 = st.columns(3)
-col1.metric(f"Victoria {equipo_local}", f"{p_local*100:.1f}%")
-col2.metric("Empate", f"{p_empate*100:.1f}%")
-col3.metric(f"Victoria {equipo_visitante}", f"{p_visit*100:.1f}%")
-
-st.markdown("---")
-col4, col5, col6 = st.columns(3)
-col4.metric("Over 2.5 Goles", f"{p_over*100:.1f}%")
-col5.metric("Under 2.5 Goles", f"{p_under*100:.1f}%")
-col6.metric("Córners Esperados", f"{total_corners_esperados:.1f}")
-
-opciones = {
-    f"Victoria {equipo_local}": p_local,
-    f"Victoria {equipo_visitante}": p_visit,
-    "Over 2.5 Goles": p_over,
-    "Under 2.5 Goles": p_under
-}
-mejor_opcion = max(opciones, key=opciones.get)
-st.success(f"🎯 **Opción más viable estadísticamente:** **{mejor_opcion}** ({opciones[mejor_opcion]*100:.1f}%)")
+# Ligas principales preconfiguradas
+LISTA_LIGAS = [
+    "Liga BetPlay (Colombia)",
+    "Premier League (Inglaterra)",
+    "La Liga (España)",
+    "Serie A (Italia)",
+    "Bundesliga (Alemania)",
+    "Ligue 1 (Francia)",
+    "Otra / Personalizada",
+]
 
 
-# --- SECCIÓN 2: EVALUADOR DE CUOTAS (+EV) ---
-st.markdown("---")
-st.subheader("💰 Evaluador de Cuotas de la Casa")
+def evaluar_apuesta_valor(prob_modelo_porcentaje, cuota_casa):
+  prob_decimal = prob_modelo_porcentaje / 100.0
+  expectativa_valor = prob_decimal * cuota_casa
+  prob_implicita_casa = (1 / cuota_casa) * 100
+  tiene_valor = expectativa_valor > 1.0
+  return {
+      "tiene_valor": tiene_valor,
+      "expectativa": round(expectativa_valor, 3),
+      "prob_implicita": round(prob_implicita_casa, 2),
+  }
 
-col_cuota1, col_cuota2 = st.columns(2)
-with col_cuota1:
-    mercado_elegido = st.selectbox(
-        "Selecciona el mercado a evaluar:",
-        [f"Victoria {equipo_local}", f"Victoria {equipo_visitante}", "Empate", "Over 2.5 Goles", "Under 2.5 Goles"]
+
+if menu == "Registrar Partido":
+  st.header("📝 Registrar Nuevo Partido en la BD")
+
+  with st.form("form_registro"):
+    liga_seleccionada = st.selectbox("Selecciona la Liga", LISTA_LIGAS)
+
+    # Si selecciona otra, habilitar input de texto libre
+    if liga_seleccionada == "Otra / Personalizada":
+      liga = st.text_input("Escribe el nombre de la Liga")
+    else:
+      liga = liga_seleccionada
+
+    local = st.text_input("Equipo Local")
+    visitante = st.text_input("Equipo Visitante")
+
+    col1, col2 = st.columns(2)
+    with col1:
+      g_loc = st.number_input("Goles Local", min_value=0, step=1, value=1)
+      c_loc = st.number_input("Córneres Local", min_value=0, step=1, value=5)
+    with col2:
+      g_vis = st.number_input("Goles Visitante", min_value=0, step=1, value=1)
+      c_vis = st.number_input("Córneres Visitante", min_value=0, step=1, value=4)
+
+    submit = st.form_submit_button("Guardar en Base de Datos")
+
+    if submit:
+      if local and visitante and liga:
+        insertar_partido(liga, local, visitante, g_loc, g_vis, c_loc, c_vis)
+        st.success(
+            f"¡Partido guardado con éxito en {liga}: {local} vs {visitante}!"
+        )
+      else:
+        st.error("Por favor completa los nombres de los equipos.")
+
+elif menu == "Analizar Partido":
+  st.header("🔍 Análisis y Value Betting")
+
+  liga_seleccionada = st.selectbox(
+      "Filtrar / Indicar Liga para el Análisis", LISTA_LIGAS
+  )
+  if liga_seleccionada == "Otra / Personalizada":
+    liga = st.text_input("Escribe el nombre de la Liga", "Internacional")
+  else:
+    liga = liga_seleccionada
+
+  col_a, col_b = st.columns(2)
+  with col_a:
+    local = st.text_input("Equipo Local a Analizar", "Real Madrid")
+  with col_b:
+    visitante = st.text_input("Equipo Visitante a Analizar", "Barcelona")
+
+  st.subheader("💰 Cuotas de la Casa de Apuestas")
+  col_c1, col_c2, col_c3 = st.columns(3)
+  with col_c1:
+    cuota_local = st.number_input(
+        "Cuota Gana Local", min_value=1.01, value=2.10, step=0.01
     )
-    if mercado_elegido == f"Victoria {equipo_local}":
-        prob_elegida = p_local
-    elif mercado_elegido == f"Victoria {equipo_visitante}":
-        prob_elegida = p_visit
-    elif mercado_elegido == "Empate":
-        prob_elegida = p_empate
-    elif mercado_elegido == "Over 2.5 Goles":
-        prob_elegida = p_over
+  with col_c2:
+    linea_c = st.number_input(
+        "Línea Córneres", min_value=0.5, value=9.5, step=0.5
+    )
+  with col_c3:
+    cuota_over_c = st.number_input(
+        "Cuota Over Córneres", min_value=1.01, value=1.90, step=0.01
+    )
+
+  # Apuesta base para sugerencias de monto
+  apuesta_base = st.number_input(
+      "Monto de tu Apuesta Base ($)", min_value=500, value=1000, step=500
+  )
+
+  if st.button("Ejecutar Análisis Estadístico", type="primary"):
+    # Obtener estadísticas desde SQLite
+    stats_local = obtener_promedios_equipo(local)
+    stats_visita = obtener_promedios_equipo(visitante)
+
+    lam_goles_loc = stats_local["goles_favor_local"]
+    lam_goles_vis = stats_visita["goles_favor_visitante"]
+    lam_corn_loc = stats_local["corners_favor_local"]
+    lam_corn_vis = stats_visita["corners_favor_visitante"]
+
+    st.markdown("---")
+    st.subheader(f"📊 Reporte: {local} vs {visitante} ({liga})")
+
+    # Mostrar lambdas calculados
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+      st.info(
+          f"**{local} (Local)**\n- Goles esp: {lam_goles_loc}\n- Córneres esp:"
+          f" {lam_corn_loc}"
+      )
+    with col_s2:
+      st.info(
+          f"**{visitante} (Visita)**\n- Goles esp:"
+          f" {lam_goles_vis}\n- Córneres esp: {lam_corn_vis}"
+      )
+
+    # 1. Modelo de Goles
+    st.markdown("### ⚽ Modelo de Goles & 1X2")
+    res_goles = calcular_probabilidades_poisson(lam_goles_loc, lam_goles_vis)
+
+    col_g1, col_g2, col_g3 = st.columns(3)
+    col_g1.metric(f"Gana {local}", f"{res_goles['prob_local_win']}%")
+    col_g2.metric("Empate", f"{res_goles['prob_empate']}%")
+    col_g3.metric(f"Gana {visitante}", f"{res_goles['prob_visitante_win']}%")
+
+    val = evaluar_apuesta_valor(res_goles["prob_local_win"], cuota_local)
+    st.write(
+        f"* **Cuota ofrecida (Local):** {cuota_local} (Probabilidad implícita:"
+        f" {val['prob_implicita']}%)"
+    )
+
+    if val["tiene_valor"]:
+      st.success(
+          f"🔥 **¡ALERTA DE VALOR!** Apuesta recomendada al Gana Local"
+          f" (Expectativa matemática: {val['expectativa']})"
+      )
     else:
-        prob_elegida = p_under
+      st.warning("❌ Sin valor matemático para el triunfo local.")
 
-with col_cuota2:
-    cuota_casa = st.number_input("Cuota ofrecida", min_value=1.01, value=2.00, step=0.01)
+    # 2. Modelo de Córneres
+    st.markdown("### 🚩 Modelo de Tiros de Esquina")
+    res_corners = calcular_corners_partido(
+        lam_corn_loc, lam_corn_vis, linea_apuesta=linea_c
+    )
 
-monto_apuesta = st.number_input("Monto a apostar ($)", min_value=500, value=1000, step=500)
+    col_c1, col_c2, col_c3 = st.columns(3)
+    col_c1.metric("Media Córneres", f"{res_corners['lambda_esperado']}")
+    col_c2.metric(f"Prob. Over {linea_c}", f"{res_corners['prob_over']}%")
+    col_c3.metric(f"Prob. Under {linea_c}", f"{res_corners['prob_under']}%")
 
-if st.button("Evaluar Cuota"):
-    ev = (prob_elegida * cuota_casa) - 1
-    
-    if ev > 0.02:
-        estado_eval = "✅ APUESTA CON VALOR (+EV)"
-        color_func = st.success
+    val_c = evaluar_apuesta_valor(res_corners["prob_over"], cuota_over_c)
+    st.write(
+        f"* **Cuota ofrecida (Over {linea_c}):** {cuota_over_c}"
+        f" (Probabilidad implícita: {val_c['prob_implicita']}%)"
+    )
+
+    if val_c["tiene_valor"]:
+      st.success(
+          f"🔥 **¡ALERTA DE VALOR!** Apuesta recomendada al Over de Córneres"
+          f" (Expectativa matemática: {val_c['expectativa']})"
+      )
     else:
-        estado_eval = "❌ SIN VALOR / DESCARTAR"
-        color_func = st.warning
+      st.warning("❌ Sin valor matemático para córneres.")
 
-    st.markdown("### Resultado:")
-    col_res1, col_res2 = st.columns(2)
-    col_res1.metric("Evaluación", estado_eval)
-    col_res2.metric("Valor Esperado (EV)", f"{ev*100:.2f}%")
-    color_func(f"💡 Probabilidad del modelo: {prob_elegida*100:.1f}% vs Cuota implícita: {(1/cuota_casa)*100:.1f}%")
+    # --- SECCIÓN NUEVA: RECOMENDACIÓN MÁS VIABLE GENERAL ---
+    st.markdown("---")
+    st.subheader("🎯 Resumen de Viabilidad")
 
+    # Recopilamos las opciones evaluadas para ver cuál tiene mejor probabilidad / valor
+    opciones_analisis = {
+        f"Gana {local}": (res_goles["prob_local_win"], val["tiene_valor"]),
+        "Empate": (res_goles["prob_empate"], False),
+        f"Gana {visitante}": (res_goles["prob_visitante_win"], False),
+        f"Over Córneres {linea_c}": (res_corners["prob_over"], val_c["tiene_valor"]),
+    }
 
-# --- SECCIÓN 3: REGISTRO MANUAL Y BASE DE DATOS (SQLite) ---
-st.markdown("---")
-st.subheader("📝 Registrar Apuesta en la Base de Datos")
-st.write("Guarda manualmente la apuesta que decidiste realizar para llevar el control en tu historial.")
+    # Seleccionar la de mayor porcentaje estimado
+    mejor_opcion = max(opciones_analisis, key=lambda x: opciones_analisis[x][0])
+    es_value = opciones_analisis[mejor_opcion][1]
+    prob_ganadora = opciones_analisis[mejor_opcion][0]
 
-with st.form("form_registro"):
-    nombre_partido = st.text_input("Partido (ej: Millonarios vs Santa Fe)", f"{equipo_local} vs {equipo_visitante}")
-    seleccion_manual = st.text_input("Selección apostada", mercado_elegido)
-    cuota_manual = st.number_input("Cuota apostada", min_value=1.01, value=cuota_casa, step=0.01)
-    monto_manual = st.number_input("Monto apostado ($)", min_value=500, value=monto_apuesta, step=500)
-    
-    submit_guardar = st.form_submit_button("Guardar en el Historial")
-    
-    if submit_guardar:
-        conn = sqlite3.connect('apuestas.db')
-        c = conn.cursor()
-        fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M")
-        c.execute("INSERT INTO historial_apuestas (fecha, partido, seleccion, cuota, monto, estado) VALUES (?, ?, ?, ?, ?, ?)",
-                  (fecha_actual, nombre_partido, seleccion_manual, cuota_manual, monto_manual, "Pendiente"))
-        conn.commit()
-        conn.close()
-        st.success("¡Apuesta registrada y guardada en la base de datos con éxito!")
-
-# Mostrar Historial Guardado
-st.markdown("---")
-st.subheader("📂 Historial de Apuestas Guardadas")
-conn = sqlite3.connect('apuestas.db')
-cursor = conn.cursor()
-cursor.execute("SELECT id, fecha, partido, seleccion, cuota, monto, estado FROM historial_apuestas ORDER BY id DESC")
-registros = cursor.fetchall()
-conn.close()
-
-if registros:
-    for reg in registros:
-        st.text(f"ID: {reg[0]} | 📅 {reg[1]} | ⚽ {reg[2]} | 🎯 {reg[3]} | Cuota: {reg[4]} | Monto: ${reg[5]:,.0f} | Estado: {reg[6]}")
-else:
-    st.info("Aún no tienes apuestas registradas en la base de datos.")
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+      st.metric(
+          label="Opción con Mayor Probabilidad",
+          value=mejor_opcion,
+          delta=f"{prob_ganadora}%",
+      )
+    with col_r2:
+      monto_sugerido = apuesta_base if es_value else 0
+      st.metric(
+          label="Monto Sugerido de Apuesta",
+          value=f"${monto_sugerido:,.0f}",
+          delta=(
+              "✅ Con Valor (+EV)" if es_value else "❌ Evitar / Sin Valor (+EV)"
+          ),
+      )
