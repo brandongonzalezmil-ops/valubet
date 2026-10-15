@@ -71,7 +71,6 @@ if menu == "Analizar Partido":
             local = st.text_input("Equipo Local", "Millonarios")
     with col_b:
         if "API" in origen_datos:
-            # Intentar poner por defecto el segundo equipo si existe para que no sea el mismo
             idx_vis = 1 if len(lista_equipos) > 1 else 0
             visitante = st.selectbox("Equipo Visitante", lista_equipos, index=idx_vis)
         else:
@@ -98,17 +97,19 @@ if menu == "Analizar Partido":
                 
                 lam_goles_loc = stats_loc_api["goles_favor"]
                 lam_goles_vis = stats_vis_api["goles_favor"]
-                lam_corn_loc = 5.5
-                lam_corn_vis = 4.5
                 
-                st.success(f"🤖 Datos cargados vía API ({stats_loc_api['partidos_analizados']} partidos de {local} y {stats_vis_api['partidos_analizados']} de {visitante}).")
+                # Córneres dinámicos que cambian según el rendimiento del equipo
+                lam_corn_loc = stats_loc_api["corners_estimados"]
+                lam_corn_vis = stats_vis_api["corners_estimados"]
+                
+                st.success(f"🤖 Datos y córneres dinámicos cargados vía API ({stats_loc_api['partidos_analizados']} partidos de {local} y {stats_vis_api['partidos_analizados']} de {visitante}).")
             else:
                 stats_local = obtener_promedios_equipo(local)
                 stats_visita = obtener_promedios_equipo(visitante)
                 lam_goles_loc = stats_local["goles_favor_local"]
                 lam_goles_vis = stats_visita["goles_favor_visitante"]
                 lam_corn_loc = stats_local["corners_favor_local"]
-                lam_corn_vis = stats_visita["corners_favor_visitante"]
+                lam_corn_vis = stats_local["corners_favor_visitante"]
                 st.info("📂 Datos cargados desde tu Base de Datos local.")
 
             st.markdown("---")
