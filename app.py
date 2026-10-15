@@ -713,21 +713,22 @@ if menu == "Analizar Partido":
             # Ya no aparece "Sin validar".
             # En modo API se mantienen desactivadas las
             # recomendaciones de apuestas de córneres.
-            valor_mostrado = "🔥" if valor else "—"
-            monto_mostrado = round(monto, -2)
-
             if modo_api and es_corner:
-            monto_mostrado = 0
+                valor_mostrado = "—"
+                monto_mostrado = 0
+            else:
+                valor_mostrado = "🔥" if valor else "—"
+                monto_mostrado = round(monto, -2)
 
-        filas.append({
-            "Mercado": nombre,
-            "Prob. modelo %": round(prob, 1),
-            "Cuota": cuota,
-            "Prob. casa %": round(justa, 1),
-            "EV": round(ev, 3),
-            "Valor": valor_mostrado,
-            "Monto sugerido": monto_mostrado,
-        })
+            filas.append({
+                "Mercado": nombre,
+                "Prob. modelo %": round(prob, 1),
+                "Cuota": cuota,
+                "Prob. casa %": round(justa, 1),
+                "EV": round(ev, 3),
+                "Valor": valor_mostrado,
+                "Monto sugerido": monto_mostrado,
+            })
 
         st.markdown("### 🎯 Valor por mercado")
 
