@@ -4,7 +4,7 @@ import time
 import requests
 
 # La clave ya NO va en el código: se lee de una variable de entorno.
-API_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
+API_KEY = API_KEY = "2ba9b7d67707479c8619e75f79ad0971"
 BASE_URL = "https://api.football-data.org/v4/"
 
 # Caché simple en memoria para no repetir peticiones (el plan gratis limita ~10 por minuto)
