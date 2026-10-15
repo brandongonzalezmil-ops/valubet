@@ -719,15 +719,15 @@ monto_mostrado = round(monto, -2)
 if modo_api and es_corner:
     monto_mostrado = 0
 
-            filas.append({
-                "Mercado": nombre,
-                "Prob. modelo %": round(prob, 1),
-                "Cuota": cuota,
-                "Prob. casa %": round(justa, 1),
-                "EV": round(ev, 3),
-                "Valor": valor_mostrado,
-                "Monto sugerido": monto_mostrado,
-            })
+        filas.append({
+            "Mercado": nombre,
+            "Prob. modelo %": round(prob, 1),
+            "Cuota": cuota,
+            "Prob. casa %": round(justa, 1),
+            "EV": round(ev, 3),
+            "Valor": valor_mostrado,
+            "Monto sugerido": monto_mostrado,
+        })
 
         st.markdown("### 🎯 Valor por mercado")
 
