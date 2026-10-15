@@ -1,10 +1,13 @@
-from corners_model import calcular_corners_partido
-from database import init_db, insertar_partido, obtener_promedios_equipo
-from poisson_model import calcular_probabilidades_poisson
-from api_client import obtener_partidos_competencia, obtener_equipos_liga, obtener_promedios_api
-import streamlit as st
+import sqlite3
+from datetime import date
+
 import numpy as np
-from scipy.stats import poisson
+import pandas as pd
+import streamlit as st
+from scipy.stats import nbinom, poisson
+
+from api_client import obtener_equipos_liga, obtener_partidos_competencia, obtener_promedios_api
+from database import init_db, insertar_partido, obtener_promedios_equipo
 
 init_db()
 
@@ -16,8 +19,15 @@ st.title("⚽ ValuBet - Analizador de Apuestas")
 st.write("Análisis cuantitativo automatizado con selección inteligente de equipos.")
 
 menu = st.sidebar.selectbox(
-    "Menú de Navegación", ["Analizar Partido", "Ver Partidos API", "Registrar Partido Manual"]
+    "Menú de Navegación",
+    ["Analizar Partido", "Ver Partidos API", "Registrar Partido Manual", "Historial de Apuestas"],
 )
+
+st.sidebar.markdown("### ⚙️ Parámetros del modelo")
+UMBRAL_EV = st.sidebar.slider("EV mínimo para marcar valor", 1.00, 1.30, 1.05, 0.01)
+FRACCION_KELLY = st.sidebar.slider("Fracción de Kelly", 0.05, 1.00, 0.25, 0.05)
+VENTAJA_LOCAL = st.sidebar.slider("Ventaja de local (solo modo API)", 1.00, 1.30, 1.10, 0.01)
+DISPERSION_CORNERS = st.sidebar.slider("Dispersión córneres (1 = Poisson)", 1.05, 2.00, 1.30, 0.05)
 
 LIGAS_API = {
     "La Liga (España)": "PD",
@@ -25,189 +35,302 @@ LIGAS_API = {
     "Serie A (Italia)": "SA",
     "Bundesliga (Alemania)": "BL1",
     "Ligue 1 (Francia)": "FL1",
-    "Champions League": "CL"
+    "Champions League": "CL",
 }
 
-LISTA_LIGAS_MANUAL = [
-    "Liga BetPlay (Colombia)",
-    "Otra / Personalizada"
-]
+LISTA_LIGAS_MANUAL = ["Liga BetPlay (Colombia)", "Otra / Personalizada"]
 
-def evaluar_apuesta_valor(prob_modelo_porcentaje, cuota_casa):
-    prob_decimal = prob_modelo_porcentaje / 100.0
-    expectativa_valor = prob_decimal * cuota_casa
-    prob_implicita_casa = (1 / cuota_casa) * 100
-    tiene_valor = expectativa_valor > 1.0
+
+# ---------------------------------------------------------------------------
+# Caché de llamadas a la API (evita gastar el límite de peticiones)
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600)
+def equipos_liga(codigo):
+    return obtener_equipos_liga(codigo)
+
+
+@st.cache_data(ttl=3600)
+def promedios_api(equipo, codigo):
+    return obtener_promedios_api(equipo, codigo)
+
+
+@st.cache_data(ttl=600)
+def partidos_liga(codigo):
+    return obtener_partidos_competencia(codigo)
+
+
+# ---------------------------------------------------------------------------
+# Historial de apuestas (SQLite propio, no toca tu database.py)
+# ---------------------------------------------------------------------------
+DB_HISTORIAL = "historial_apuestas.db"
+
+
+def _conn():
+    con = sqlite3.connect(DB_HISTORIAL)
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS apuestas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT, partido TEXT, mercado TEXT,
+            cuota REAL, monto REAL, resultado TEXT DEFAULT 'pendiente')"""
+    )
+    return con
+
+
+def guardar_apuesta(partido, mercado, cuota, monto):
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO apuestas (fecha, partido, mercado, cuota, monto) VALUES (?,?,?,?,?)",
+            (str(date.today()), partido, mercado, cuota, monto),
+        )
+
+
+def listar_apuestas():
+    con = _conn()
+    df = pd.read_sql_query("SELECT * FROM apuestas ORDER BY id DESC", con)
+    con.close()
+    return df
+
+
+def actualizar_resultado(id_apuesta, resultado):
+    with _conn() as con:
+        con.execute("UPDATE apuestas SET resultado = ? WHERE id = ?", (resultado, id_apuesta))
+
+
+# ---------------------------------------------------------------------------
+# Modelos
+# ---------------------------------------------------------------------------
+def combinar(goles_favor, goles_contra_rival):
+    """Mezcla ataque propio con defensa del rival. Si no hay dato de defensa, usa solo ataque."""
+    if goles_contra_rival is None:
+        return goles_favor
+    return (goles_favor + goles_contra_rival) / 2
+
+
+def calcular_goles(lam_l, lam_v, rho=-0.05, max_goles=10):
+    """Poisson bivariado con corrección Dixon-Coles para marcadores bajos."""
+    g = np.arange(max_goles + 1)
+    m = np.outer(poisson.pmf(g, lam_l), poisson.pmf(g, lam_v))
+    m[0, 0] *= 1 - lam_l * lam_v * rho
+    m[0, 1] *= 1 + lam_l * rho
+    m[1, 0] *= 1 + lam_v * rho
+    m[1, 1] *= 1 - rho
+    m /= m.sum()
+
+    total = np.add.outer(g, g)
+    over25 = m[total > 2].sum()
+    btts = 1 - m[0, :].sum() - m[:, 0].sum() + m[0, 0]
     return {
-        "tiene_valor": tiene_valor,
-        "expectativa": round(expectativa_valor, 3),
-        "prob_implicita": round(prob_implicita_casa, 2)
+        "local": np.tril(m, -1).sum() * 100,
+        "empate": np.trace(m) * 100,
+        "visitante": np.triu(m, 1).sum() * 100,
+        "over25": over25 * 100,
+        "under25": (1 - over25) * 100,
+        "btts_si": btts * 100,
+        "btts_no": (1 - btts) * 100,
     }
 
-# --- MENU: ANALIZAR PARTIDO ---
+
+def calcular_corners(lam_l, lam_v, linea, dispersion):
+    """Binomial negativa: los córneres suelen tener más varianza que Poisson."""
+    mu = lam_l + lam_v
+    p = 1 / dispersion
+    n = mu * p / (1 - p)
+    prob_over = nbinom.sf(int(linea), n, p) * 100
+    return {"media": mu, "over": prob_over, "under": 100 - prob_over}
+
+
+# ---------------------------------------------------------------------------
+# Value betting
+# ---------------------------------------------------------------------------
+def prob_justa(cuotas):
+    """Probabilidades implícitas normalizadas (sin el margen de la casa), en %."""
+    imp = np.array([1 / c for c in cuotas])
+    return imp / imp.sum() * 100
+
+
+def evaluar(prob_pct, cuota, bankroll):
+    p = prob_pct / 100
+    ev = p * cuota
+    kelly = max(0.0, (p * cuota - 1) / (cuota - 1))
+    tiene_valor = ev >= UMBRAL_EV
+    monto = bankroll * min(kelly * FRACCION_KELLY, 0.05) if tiene_valor else 0.0
+    return ev, tiene_valor, monto
+
+
+# ---------------------------------------------------------------------------
+# MENU: ANALIZAR PARTIDO
+# ---------------------------------------------------------------------------
 if menu == "Analizar Partido":
     st.header("🔍 Análisis y Value Betting")
-    
-    origen_datos = st.radio("Fuente de datos:", ["Automático desde API (Ligas Europeas)", "Base de Datos Manual (BetPlay / Otras)"])
-    
-    if "API" in origen_datos:
+
+    origen_datos = st.radio(
+        "Fuente de datos:",
+        ["Automático desde API (Ligas Europeas)", "Base de Datos Manual (BetPlay / Otras)"],
+    )
+    modo_api = "API" in origen_datos
+
+    if modo_api:
         liga_nombre = st.selectbox("Selecciona la Liga en la API", list(LIGAS_API.keys()))
         codigo_liga = LIGAS_API[liga_nombre]
-        
-        # Obtenemos la lista real de equipos de la API para los desplegables
-        lista_equipos = obtener_equipos_liga(codigo_liga)
-        if not lista_equipos:
-            lista_equipos = ["Carga los equipos seleccionando la liga"]
+        lista_equipos = equipos_liga(codigo_liga) or ["Sin equipos disponibles"]
     else:
         liga_nombre = st.selectbox("Selecciona la Liga", LISTA_LIGAS_MANUAL)
         codigo_liga = None
-        lista_equipos = ["Escribe o registra equipos en tu BD"]
 
     col_a, col_b = st.columns(2)
     with col_a:
-        if "API" in origen_datos:
-            local = st.selectbox("Equipo Local", lista_equipos, index=0 if len(lista_equipos) > 0 else 0)
+        if modo_api:
+            local = st.selectbox("Equipo Local", lista_equipos, index=0)
         else:
             local = st.text_input("Equipo Local", "Millonarios")
     with col_b:
-        if "API" in origen_datos:
-            idx_vis = 1 if len(lista_equipos) > 1 else 0
-            visitante = st.selectbox("Equipo Visitante", lista_equipos, index=idx_vis)
+        if modo_api:
+            visitante = st.selectbox(
+                "Equipo Visitante", lista_equipos, index=1 if len(lista_equipos) > 1 else 0
+            )
         else:
             visitante = st.text_input("Equipo Visitante", "Santa Fe")
 
     st.subheader("💰 Cuotas de la Casa de Apuestas")
-    col_c1, col_c2, col_c3 = st.columns(3)
-    with col_c1:
-        cuota_local = st.number_input("Cuota Gana Local", min_value=1.01, value=2.10, step=0.01)
-    with col_c2:
-        linea_c = st.number_input("Línea Córneres", min_value=0.5, value=9.5, step=0.5)
-    with col_c3:
-        cuota_over_c = st.number_input("Cuota Over Córneres", min_value=1.01, value=1.90, step=0.01)
+    c1, c2, c3 = st.columns(3)
+    cuota_1 = c1.number_input("Gana Local", min_value=1.01, value=2.10, step=0.01)
+    cuota_x = c2.number_input("Empate", min_value=1.01, value=3.30, step=0.01)
+    cuota_2 = c3.number_input("Gana Visitante", min_value=1.01, value=3.50, step=0.01)
 
-    apuesta_base = st.number_input("Monto Apuesta Base ($)", min_value=500, value=1000, step=500)
+    c4, c5 = st.columns(2)
+    cuota_o25 = c4.number_input("Over 2.5 Goles", min_value=1.01, value=1.95, step=0.01)
+    cuota_btts = c5.number_input("Ambos Marcan: Sí", min_value=1.01, value=1.85, step=0.01)
+
+    c6, c7, c8 = st.columns(3)
+    linea_c = c6.number_input("Línea Córneres", min_value=0.5, value=9.5, step=1.0)
+    cuota_over_c = c7.number_input("Over Córneres", min_value=1.01, value=1.90, step=0.01)
+    cuota_under_c = c8.number_input("Under Córneres", min_value=1.01, value=1.90, step=0.01)
+
+    bankroll = st.number_input("Bankroll total ($)", min_value=1000, value=100000, step=5000)
 
     if st.button("Ejecutar Análisis Estadístico", type="primary"):
         if local == visitante:
             st.error("⚠️ El equipo local y visitante no pueden ser el mismo.")
+            st.stop()
+
+        # --- Obtención de datos ---
+        if modo_api:
+            sl = promedios_api(local, codigo_liga)
+            sv = promedios_api(visitante, codigo_liga)
+            gc_l, gc_v = sl.get("goles_contra"), sv.get("goles_contra")
+            lam_goles_loc = combinar(sl["goles_favor"], gc_v) * VENTAJA_LOCAL
+            lam_goles_vis = combinar(sv["goles_favor"], gc_l) / VENTAJA_LOCAL
+            lam_corn_loc = sl["corners_estimados"]
+            lam_corn_vis = sv["corners_estimados"]
+            st.success(
+                f"🤖 Datos cargados vía API ({sl['partidos_analizados']} partidos de {local} "
+                f"y {sv['partidos_analizados']} de {visitante})."
+            )
         else:
-            if "API" in origen_datos:
-                stats_loc_api = obtener_promedios_api(local, codigo_liga)
-                stats_vis_api = obtener_promedios_api(visitante, codigo_liga)
-                
-                lam_goles_loc = stats_loc_api["goles_favor"]
-                lam_goles_vis = stats_vis_api["goles_favor"]
-                
-                # Córneres dinámicos que cambian según el rendimiento del equipo
-                lam_corn_loc = stats_loc_api["corners_estimados"]
-                lam_corn_vis = stats_vis_api["corners_estimados"]
-                
-                st.success(f"🤖 Datos y córneres dinámicos cargados vía API ({stats_loc_api['partidos_analizados']} partidos de {local} y {stats_vis_api['partidos_analizados']} de {visitante}).")
-            else:
-                stats_local = obtener_promedios_equipo(local)
-                stats_visita = obtener_promedios_equipo(visitante)
-                lam_goles_loc = stats_local["goles_favor_local"]
-                lam_goles_vis = stats_visita["goles_favor_visitante"]
-                lam_corn_loc = stats_local["corners_favor_local"]
-                lam_corn_vis = stats_local["corners_favor_visitante"]
-                st.info("📂 Datos cargados desde tu Base de Datos local.")
+            sl = obtener_promedios_equipo(local)
+            sv = obtener_promedios_equipo(visitante)
+            gc_l = sl.get("goles_contra_local")
+            gc_v = sv.get("goles_contra_visitante")
+            lam_goles_loc = combinar(sl["goles_favor_local"], gc_v)
+            lam_goles_vis = combinar(sv["goles_favor_visitante"], gc_l)
+            lam_corn_loc = sl["corners_favor_local"]
+            lam_corn_vis = sv["corners_favor_visitante"]  # corregido: antes usaba stats_local
+            st.info("📂 Datos cargados desde tu Base de Datos local.")
 
-            st.markdown("---")
-            st.subheader(f"📊 Reporte: {local} vs {visitante}")
+        if gc_l is None or gc_v is None:
+            st.caption(
+                "⚠️ No hay goles en contra en tus datos: el modelo usa solo ataque. "
+                "Agrega 'goles_contra' para que también considere la defensa del rival."
+            )
 
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                st.info(f"**{local}**\n- Goles esp: {lam_goles_loc}\n- Córneres esp: {lam_corn_loc}")
-            with col_s2:
-                st.info(f"**{visitante}**\n- Goles esp: {lam_goles_vis}\n- Córneres esp: {lam_corn_vis}")
+        lam_goles_loc = max(lam_goles_loc, 0.05)
+        lam_goles_vis = max(lam_goles_vis, 0.05)
 
-            # Modelo Poisson 1X2
-            st.markdown("### ⚽ Modelo de Goles & 1X2")
-            res_goles = calcular_probabilidades_poisson(lam_goles_loc, lam_goles_vis)
+        # --- Modelos ---
+        goles = calcular_goles(lam_goles_loc, lam_goles_vis)
+        corn = calcular_corners(lam_corn_loc, lam_corn_vis, linea_c, DISPERSION_CORNERS)
 
-            col_g1, col_g2, col_g3 = st.columns(3)
-            col_g1.metric(f"Gana {local}", f"{res_goles['prob_local_win']}%")
-            col_g2.metric("Empate", f"{res_goles['prob_empate']}%")
-            col_g3.metric(f"Gana {visitante}", f"{res_goles['prob_visitante_win']}%")
+        st.markdown("---")
+        st.subheader(f"📊 Reporte: {local} vs {visitante}")
 
-            val = evaluar_apuesta_valor(res_goles["prob_local_win"], cuota_local)
-            st.write(f"* **Cuota ofrecida:** {cuota_local} (Probabilidad implícita: {val['prob_implicita']}%)")
+        col_s1, col_s2 = st.columns(2)
+        col_s1.info(f"**{local}**\n- Goles esp: {lam_goles_loc:.2f}\n- Córneres esp: {lam_corn_loc:.2f}")
+        col_s2.info(f"**{visitante}**\n- Goles esp: {lam_goles_vis:.2f}\n- Córneres esp: {lam_corn_vis:.2f}")
 
-            if val["tiene_valor"]:
-                st.success(f"🔥 **¡ALERTA DE VALOR!** Apuesta recomendada al Gana Local (EV: {val['expectativa']})")
-            else:
-                st.warning("❌ Sin valor matemático para el triunfo local.")
+        g1, g2, g3 = st.columns(3)
+        g1.metric(f"Gana {local}", f"{goles['local']:.1f}%")
+        g2.metric("Empate", f"{goles['empate']:.1f}%")
+        g3.metric(f"Gana {visitante}", f"{goles['visitante']:.1f}%")
 
-            # Modelo Córneres
-            st.markdown("### 🚩 Modelo de Tiros de Esquina")
-            res_corners = calcular_corners_partido(lam_corn_loc, lam_corn_vis, linea_apuesta=linea_c)
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Media Córneres", f"{corn['media']:.1f}")
+        k2.metric(f"Over {linea_c}", f"{corn['over']:.1f}%")
+        k3.metric(f"Under {linea_c}", f"{corn['under']:.1f}%")
 
-            col_c1, col_c2, col_c3 = st.columns(3)
-            col_c1.metric("Media Córneres", f"{res_corners['lambda_esperado']}")
-            col_c2.metric(f"Prob. Over {linea_c}", f"{res_corners['prob_over']}%")
-            col_c3.metric(f"Prob. Under {linea_c}", f"{res_corners['prob_under']}%")
+        # --- Tabla de valor: todos los mercados contra su cuota ---
+        justa_1x2 = prob_justa([cuota_1, cuota_x, cuota_2])
+        justa_corn = prob_justa([cuota_over_c, cuota_under_c])
 
-            val_c = evaluar_apuesta_valor(res_corners["prob_over"], cuota_over_c)
-            st.write(f"* **Cuota ofrecida (Over {linea_c}):** {cuota_over_c} (Prob. implícita: {val_c['prob_implicita']}%)")
+        mercados = [
+            (f"Gana {local}", goles["local"], cuota_1, justa_1x2[0]),
+            ("Empate", goles["empate"], cuota_x, justa_1x2[1]),
+            (f"Gana {visitante}", goles["visitante"], cuota_2, justa_1x2[2]),
+            ("Over 2.5 Goles", goles["over25"], cuota_o25, 100 / cuota_o25),
+            ("Ambos Marcan: Sí", goles["btts_si"], cuota_btts, 100 / cuota_btts),
+            (f"Over {linea_c} Córneres", corn["over"], cuota_over_c, justa_corn[0]),
+            (f"Under {linea_c} Córneres", corn["under"], cuota_under_c, justa_corn[1]),
+        ]
 
-            if val_c["tiene_valor"]:
-                st.success(f"🔥 **¡ALERTA DE VALOR!** Apuesta recomendada al Over de Córneres")
-            else:
-                st.warning("❌ Sin valor matemático para córneres.")
+        filas = []
+        for nombre, prob, cuota, justa in mercados:
+            ev, valor, monto = evaluar(prob, cuota, bankroll)
+            filas.append(
+                {
+                    "Mercado": nombre,
+                    "Prob. modelo %": round(prob, 1),
+                    "Cuota": cuota,
+                    "Prob. casa % (sin margen)": round(justa, 1),
+                    "EV": round(ev, 3),
+                    "Valor": "🔥" if valor else "—",
+                    "Monto sugerido": round(monto, -2),
+                }
+            )
 
-            # Recomendaciones directas
-            p_over_val = res_goles.get("prob_over_25", 52.5)
-            p_under_val = res_goles.get("prob_under_25", 47.5)
-            p_no_loc = poisson.pmf(0, lam_goles_loc)
-            p_no_vis = poisson.pmf(0, lam_goles_vis)
-            prob_ambos_marcan_si = (1 - p_no_loc) * (1 - p_no_vis) * 100
-            prob_ambos_marcan_no = 100 - prob_ambos_marcan_si
+        st.markdown("### 🎯 Valor por mercado")
+        st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
 
-            st.markdown("---")
-            st.subheader("🎯 Sugerencias Directas de Apuesta")
+        con_valor = [f for f in filas if f["Valor"] == "🔥"]
+        if con_valor:
+            mejor = max(con_valor, key=lambda f: f["EV"])
+            st.success(f"🔥 Mayor valor: **{mejor['Mercado']}** (EV {mejor['EV']}, monto sugerido ${mejor['Monto sugerido']:,.0f})")
+        else:
+            st.warning(f"❌ Ningún mercado supera el EV mínimo de {UMBRAL_EV}.")
 
-            col_rec1, col_rec2 = st.columns(2)
+        st.caption(
+            "Un EV alto con un modelo simple suele ser error del modelo, no valor real. "
+            "Registra tus apuestas en el Historial y valida con resultados antes de subir montos."
+        )
 
-            with col_rec1:
-                st.markdown("#### ⚽ Mercado de Goles")
-                if p_over_val > 50:
-                    st.success(f"🔥 **Apuesta recomendada: Over 2.5 Goles** ({p_over_val:.1f}%)")
-                else:
-                    st.info(f"🛡️ **Apuesta recomendada: Under 2.5 Goles** ({p_under_val:.1f}%)")
-
-                if prob_ambos_marcan_si > 52:
-                    st.success(f"✅ **Ambos Marcan:** **SÍ** ({prob_ambos_marcan_si:.1f}%)")
-                else:
-                    st.warning(f"❌ **Ambos Marcan:** **NO** ({prob_ambos_marcan_no:.1f}%)")
-
-            with col_rec2:
-                st.markdown("#### 🚩 Mercado de Córneres")
-                prob_over_corn = res_corners["prob_over"]
-                prob_under_corn = res_corners["prob_under"]
-
-                if prob_over_corn >= prob_under_corn:
-                    st.success(f"🔥 **Apuesta recomendada: Over {linea_c} Córneres** ({prob_over_corn}%)")
-                else:
-                    st.info(f"🛡️ **Apuesta recomendada: Under {linea_c} Córneres** ({prob_under_corn}%)")
-
-                ganador_probable = f"Gana {local}" if res_goles["prob_local_win"] > res_goles["prob_visitante_win"] else f"Gana {visitante}"
-                max_prob_ganador = max(res_goles["prob_local_win"], res_goles["prob_visitante_win"])
-                st.markdown(f"🏆 **Ganador más viable:** **{ganador_probable}** ({max_prob_ganador}%)")
-
-# --- MENU: VER PARTIDOS API ---
+# ---------------------------------------------------------------------------
+# MENU: VER PARTIDOS API
+# ---------------------------------------------------------------------------
 elif menu == "Ver Partidos API":
     st.header("🌐 Próximos Partidos (API)")
     liga_api_elegida = st.selectbox("Selecciona la Competición", list(LIGAS_API.keys()))
     codigo = LIGAS_API[liga_api_elegida]
-    
+
     if st.button("Cargar Partidos"):
-        partidos = obtener_partidos_competencia(codigo)
+        partidos = partidos_liga(codigo)
         if partidos:
             st.success(f"Partidos encontrados: {len(partidos)}")
             for p in partidos[:12]:
                 st.text(f"⚽ {p['homeTeam']['name']} vs {p['awayTeam']['name']} | [{p['status']}]")
+        else:
+            st.warning("No se encontraron partidos (revisa tu API key o el límite de peticiones).")
 
-# --- MENU: REGISTRAR MANUAL ---
+# ---------------------------------------------------------------------------
+# MENU: REGISTRAR MANUAL
+# ---------------------------------------------------------------------------
 elif menu == "Registrar Partido Manual":
     st.header("📝 Registrar Partido en BD Local")
     with st.form("form_registro"):
@@ -218,7 +341,51 @@ elif menu == "Registrar Partido Manual":
         c_loc = st.number_input("Córneres Local", min_value=0, value=5)
         g_vis = st.number_input("Goles Visitante", min_value=0, value=1)
         c_vis = st.number_input("Córneres Visitante", min_value=0, value=4)
-        
+
         if st.form_submit_button("Guardar"):
-            insertar_partido(liga, local, visitante, g_loc, g_vis, c_loc, c_vis)
-            st.success("Guardado en tu base de datos manual.")
+            if not local.strip() or not visitante.strip():
+                st.error("Escribe ambos equipos.")
+            else:
+                insertar_partido(liga, local.strip(), visitante.strip(), g_loc, g_vis, c_loc, c_vis)
+                st.success("Guardado en tu base de datos manual.")
+
+# ---------------------------------------------------------------------------
+# MENU: HISTORIAL DE APUESTAS
+# ---------------------------------------------------------------------------
+elif menu == "Historial de Apuestas":
+    st.header("📒 Historial de Apuestas")
+
+    with st.form("form_apuesta"):
+        partido = st.text_input("Partido (ej. Millonarios vs Santa Fe)")
+        mercado = st.text_input("Mercado (ej. Over 2.5 Goles)")
+        cuota = st.number_input("Cuota", min_value=1.01, value=2.00, step=0.01)
+        monto = st.number_input("Monto ($)", min_value=0, value=1000, step=500)
+        if st.form_submit_button("Guardar apuesta"):
+            guardar_apuesta(partido, mercado, cuota, monto)
+            st.success("Apuesta guardada.")
+
+    df = listar_apuestas()
+    if df.empty:
+        st.info("Aún no hay apuestas registradas.")
+    else:
+        st.dataframe(df, hide_index=True, use_container_width=True)
+
+        col_id, col_res = st.columns(2)
+        id_sel = col_id.number_input("ID de la apuesta", min_value=1, step=1)
+        res_sel = col_res.selectbox("Resultado", ["pendiente", "ganada", "perdida"])
+        if st.button("Actualizar resultado"):
+            actualizar_resultado(int(id_sel), res_sel)
+            st.rerun()
+
+        resueltas = df[df["resultado"] != "pendiente"]
+        if not resueltas.empty:
+            ganancia = np.where(
+                resueltas["resultado"] == "ganada",
+                resueltas["monto"] * (resueltas["cuota"] - 1),
+                -resueltas["monto"],
+            ).sum()
+            roi = ganancia / resueltas["monto"].sum() * 100
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Apuestas resueltas", len(resueltas))
+            m2.metric("Ganancia neta", f"${ganancia:,.0f}")
+            m3.metric("ROI", f"{roi:.1f}%")
