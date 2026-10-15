@@ -14,11 +14,20 @@ def obtener_partidos_competencia(codigo_liga="PD"):
         print(f"Error API: {e}")
     return []
 
+def obtener_equipos_liga(codigo_liga="PD"):
+    """
+    Extrae la lista única de nombres de equipos disponibles en los partidos de la liga.
+    """
+    matches = obtener_partidos_competencia(codigo_liga)
+    equipos = set()
+    for m in matches:
+        if 'homeTeam' in m and 'name' in m['homeTeam']:
+            equipos.add(m['homeTeam']['name'])
+        if 'awayTeam' in m and 'name' in m['awayTeam']:
+            equipos.add(m['awayTeam']['name'])
+    return sorted(list(equipos))
+
 def obtener_promedios_api(nombre_equipo, codigo_liga="PD"):
-    """
-    Busca los partidos jugados recientemente por el equipo en la API 
-    y calcula el promedio de goles esperados.
-    """
     matches = obtener_partidos_competencia(codigo_liga)
     goles_favor = []
     goles_contra = []
