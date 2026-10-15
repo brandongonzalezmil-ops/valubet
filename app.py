@@ -2,6 +2,8 @@ from corners_model import calcular_corners_partido
 from database import init_db, insertar_partido, obtener_promedios_equipo
 from poisson_model import calcular_probabilidades_poisson
 import streamlit as st
+import numpy as np
+from scipy.stats import poisson
 
 # Inicializar base de datos
 init_db()
@@ -138,11 +140,11 @@ elif menu == "Analizar Partido":
       )
     with col_s2:
       st.info(
-          f"**{visitante} (Visita)**\n- Goles esp:"
-          f" {lam_goles_vis}\n- Córneres esp: {lam_corn_vis}"
+          f"**{visitante} (Visita)**\n- Goles esp: {lam_goles_vis}\n- Córneres esp:"
+          f" {lam_corn_vis}"
       )
 
-    # 1. Modelo de Goles
+    # 1. Modelo de Goles & 1X2
     st.markdown("### ⚽ Modelo de Goles & 1X2")
     res_goles = calcular_probabilidades_poisson(lam_goles_loc, lam_goles_vis)
 
@@ -190,36 +192,5 @@ elif menu == "Analizar Partido":
     else:
       st.warning("❌ Sin valor matemático para córneres.")
 
-    # --- SECCIÓN NUEVA: RECOMENDACIÓN MÁS VIABLE GENERAL ---
-    st.markdown("---")
-    st.subheader("🎯 Resumen de Viabilidad")
-
-    # Recopilamos las opciones evaluadas para ver cuál tiene mejor probabilidad / valor
-    opciones_analisis = {
-        f"Gana {local}": (res_goles["prob_local_win"], val["tiene_valor"]),
-        "Empate": (res_goles["prob_empate"], False),
-        f"Gana {visitante}": (res_goles["prob_visitante_win"], False),
-        f"Over Córneres {linea_c}": (res_corners["prob_over"], val_c["tiene_valor"]),
-    }
-
-    # Seleccionar la de mayor porcentaje estimado
-    mejor_opcion = max(opciones_analisis, key=lambda x: opciones_analisis[x][0])
-    es_value = opciones_analisis[mejor_opcion][1]
-    prob_ganadora = opciones_analisis[mejor_opcion][0]
-
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-      st.metric(
-          label="Opción con Mayor Probabilidad",
-          value=mejor_opcion,
-          delta=f"{prob_ganadora}%",
-      )
-    with col_r2:
-      monto_sugerido = apuesta_base if es_value else 0
-      st.metric(
-          label="Monto Sugerido de Apuesta",
-          value=f"${monto_sugerido:,.0f}",
-          delta=(
-              "✅ Con Valor (+EV)" if es_value else "❌ Evitar / Sin Valor (+EV)"
-          ),
-      )
+    # --- CÁLCULO DE PROBABILIDADES DE GOLES (OVER/UNDER) Y AMBOS MARCAN ---
+    p
