@@ -204,24 +204,29 @@ def calcular_goles(lam_l, lam_v, rho=-0.05, max_goles=10):
         "btts_no": (1 - btts) * 100,
     }
 
-
 def calcular_corners(lam_l, lam_v, linea, dispersion):
-    """Calcula probabilidades provisionales de Over/Under de córneres."""
-    mu = lam_l + lam_v
+    """Calcula probabilidades de Over/Under de córneres."""
+    media = float(lam_l) + float(lam_v)
+    linea = float(linea)
+    dispersion = max(float(dispersion), 1.000001)
 
-    if mu <= 0:
+    if not np.isfinite(media) or media < 0:
+        raise ValueError("La media de córneres debe ser válida.")
+
+    if media == 0:
         return {"media": 0.0, "over": 0.0, "under": 100.0}
 
-    p = 1 / dispersion
-    n = mu * p / (1 - p)
+    p = 1.0 / dispersion
+    n = media * p / (1.0 - p)
 
-    # Para una línea 9.5, Over significa 10 o más córneres.
-    prob_over = nbinom.sf(int(np.floor(linea)), n, p) * 100
+    # Over 9.5 significa 10 o más córneres.
+    prob_over = nbinom.sf(np.floor(linea), n, p) * 100
+    prob_under = 100.0 - prob_over
 
     return {
-        "media": mu,
-        "over": prob_over,
-        "under": 100 - prob_over,
+        "media": media,
+        "over": float(prob_over),
+        "under": float(prob_under),
     }
 
 
