@@ -149,14 +149,8 @@ def combinar(goles_favor, goles_contra_rival):
     return (goles_favor + goles_contra_rival) / 2
 
 
-def estimar_corners_sin_datos(goles_favor, base=4.2):
-    """
-    Estimación provisional de córneres basada en el promedio goleador.
-
-    IMPORTANTE:
-    Los goles no permiten conocer directamente los córneres reales.
-    Esta función solo produce una aproximación experimental.
-    """
+def estimar_corners_sin_datos(goles_favor, base=5.4):
+    
     try:
         ataque = float(goles_favor)
     except (TypeError, ValueError):
