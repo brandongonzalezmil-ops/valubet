@@ -714,10 +714,10 @@ if menu == "Analizar Partido":
             # En modo API se mantienen desactivadas las
             # recomendaciones de apuestas de córneres.
             valor_mostrado = "🔥" if valor else "—"
-monto_mostrado = round(monto, -2)
+            monto_mostrado = round(monto, -2)
 
-if modo_api and es_corner:
-    monto_mostrado = 0
+            if modo_api and es_corner:
+            monto_mostrado = 0
 
         filas.append({
             "Mercado": nombre,
