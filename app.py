@@ -718,6 +718,7 @@ monto_mostrado = round(monto, -2)
 
 if modo_api and es_corner:
     monto_mostrado = 0
+
             filas.append({
                 "Mercado": nombre,
                 "Prob. modelo %": round(prob, 1),
@@ -978,3 +979,4 @@ elif menu == "Historial de Apuestas":
 
             st.success("Resultado actualizado.")
             st.rerun()
+
