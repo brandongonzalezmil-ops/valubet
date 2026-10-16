@@ -512,11 +512,6 @@ if menu == "Analizar Partido":
                 f"{sv.get('partidos_analizados', 'N/D')}."
             )
 
-            st.warning(
-                "⚠️ Los córneres del modo API son estimaciones indirectas "
-                "basadas en goles, no estadísticas reales de córneres."
-            )
-
         else:
 
             sl = obtener_promedios_equipo(local)
@@ -709,18 +704,16 @@ if menu == "Analizar Partido":
                 bankroll,
             )
 
-            es_corner = "Córneres" in nombre
+            valor_mostrado = "🔥" if valor else "—"
+            monto_mostrado = round(monto, -2)
 
-            # CORRECCIÓN:
-            # Ya no aparece "Sin validar".
-            # En modo API se mantienen desactivadas las
-            # recomendaciones de apuestas de córneres.
-            if modo_api and es_corner:
-                valor_mostrado = "—"
-                monto_mostrado = 0
+            # Sugerencia según el EV (que sale de los porcentajes del modelo)
+            if valor:
+                sugerencia = "✅ Apostar"
+            elif ev >= 1.0:
+                sugerencia = "👀 Posible (ventaja mínima)"
             else:
-                valor_mostrado = "🔥" if valor else "—"
-                monto_mostrado = round(monto, -2)
+                sugerencia = "❌ Evitar"
 
             filas.append({
                 "Mercado": nombre,
@@ -729,6 +722,7 @@ if menu == "Analizar Partido":
                 "Prob. casa %": round(justa, 1),
                 "EV": round(ev, 3),
                 "Valor": valor_mostrado,
+                "Sugerencia": sugerencia,
                 "Monto sugerido": monto_mostrado,
             })
 
