@@ -3,8 +3,7 @@ import time
 
 import requests
 
-# La clave ya NO va en el código: se lee de una variable de entorno.
-API_KEY = API_KEY = "2ba9b7d67707479c8619e75f79ad0971"
+API_KEY = "2ba9b7d67707479c8619e75f79ad0971"
 BASE_URL = "https://api.football-data.org/v4/"
 
 # Caché simple en memoria para no repetir peticiones (el plan gratis limita ~10 por minuto)
@@ -18,7 +17,7 @@ def obtener_partidos_competencia(codigo_liga="PD"):
         return _CACHE[codigo_liga][1]
 
     if not API_KEY:
-        print("Error API: falta la variable de entorno FOOTBALL_DATA_API_KEY")
+        print("Error API: la API_KEY está vacía en api_client.py")
         return []
 
     headers = {"X-Auth-Token": API_KEY}
@@ -33,6 +32,41 @@ def obtener_partidos_competencia(codigo_liga="PD"):
     except requests.RequestException as e:
         print(f"Error API: {e}")
     return []
+
+
+def obtener_ligas_disponibles(solo_plan_gratis=True):
+    """
+    Devuelve {"Nombre (País)": "CODIGO"} con las competiciones que ofrece la API.
+    Con solo_plan_gratis=True filtra las del plan gratuito (TIER_ONE); si no logra
+    filtrarlas, devuelve todas. Se guarda en caché 24 horas.
+    """
+    ahora = time.time()
+    if "_ligas" in _CACHE and ahora - _CACHE["_ligas"][0] < 86400:
+        return _CACHE["_ligas"][1]
+
+    if not API_KEY:
+        return {}
+
+    try:
+        response = requests.get(
+            f"{BASE_URL}competitions", headers={"X-Auth-Token": API_KEY}, timeout=15
+        )
+        if response.status_code == 200:
+            comps = response.json().get("competitions", [])
+            if solo_plan_gratis:
+                comps = [c for c in comps if c.get("plan") == "TIER_ONE"] or comps
+            ligas = {
+                f"{c['name']} ({c.get('area', {}).get('name', '')})": c["code"]
+                for c in comps
+                if c.get("code")
+            }
+            ligas = dict(sorted(ligas.items()))
+            _CACHE["_ligas"] = (ahora, ligas)
+            return ligas
+        print(f"Error API {response.status_code}: {response.text[:200]}")
+    except requests.RequestException as e:
+        print(f"Error API: {e}")
+    return {}
 
 
 def obtener_equipos_liga(codigo_liga="PD"):
