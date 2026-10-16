@@ -1,4 +1,3 @@
-
 import sqlite3
 from datetime import date
 
@@ -77,6 +76,7 @@ LIGAS_BASE = {
     "Ligue 1 (Francia)": "FL1",
     "Champions League": "CL",
 }
+
 LIGAS_API = obtener_ligas_disponibles() or LIGAS_BASE
 
 LISTA_LIGAS_MANUAL = [
@@ -982,4 +982,3 @@ elif menu == "Historial de Apuestas":
 
             st.success("Resultado actualizado.")
             st.rerun()
-
