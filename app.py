@@ -9,6 +9,7 @@ from scipy.stats import nbinom, poisson
 
 from api_client import (
     obtener_equipos_liga,
+    obtener_ligas_disponibles,
     obtener_partidos_competencia,
     obtener_promedios_api,
 )
@@ -68,7 +69,7 @@ DISPERSION_CORNERS = st.sidebar.slider(
     0.05,
 )
 
-LIGAS_API = {
+LIGAS_BASE = {
     "La Liga (España)": "PD",
     "Premier League (Inglaterra)": "PL",
     "Serie A (Italia)": "SA",
@@ -76,6 +77,7 @@ LIGAS_API = {
     "Ligue 1 (Francia)": "FL1",
     "Champions League": "CL",
 }
+LIGAS_API = obtener_ligas_disponibles() or LIGAS_BASE
 
 LISTA_LIGAS_MANUAL = [
     "Liga BetPlay (Colombia)",
